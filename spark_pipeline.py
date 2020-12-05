@@ -115,20 +115,20 @@ else:
 
 with open(f"csv/{word1}&&{word2}.csv", "w") as both:
     csv_out = csv.writer(both)
-    csv_out.writerow(["word", "freq"])
+    csv_out.writerow(["word", "relevancy"])
     for row in top_100_both:
         csv_out.writerow(row)
 
 
 with open(f"csv/{word1}.csv", "w") as w1:
     csv_out = csv.writer(w1)
-    csv_out.writerow(["word", "freq"])
+    csv_out.writerow(["word", "relevancy"])
     for row in top_100_w1_only:
         csv_out.writerow(row)
 
 
 with open(f"csv/{word2}.csv", "w") as w2:
     csv_out = csv.writer(w2)
-    csv_out.writerow(["word", "freq"])
+    csv_out.writerow(["word", "relevancy"])
     for row in top_100_w2_only:
         csv_out.writerow(row)
