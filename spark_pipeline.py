@@ -1,130 +1,134 @@
-from pyspark import SparkContext, SparkConf
-from math import log
+from pyspark import SparkContext
+from functools import partial
+from math import log10
 import csv
+import os
 
-# Creates SparkContext, reads sequenceFile and gets count
-sc = SparkContext(appName="big_data_project")
+########################### FUNCTIONS ###########################
+
+
+def process_rdd(item: tuple):
+    return (item[0], item[1].lower().strip())
+
+
+def word_filter(item: tuple):
+    return item[0].isalpha() and len(item[0]) >= 3
+
+
+def find_word(word: str, item: tuple):
+    is_in = False if word not in item[1] else True
+    return is_in
+
+
+def make_tuples(item: tuple):
+    return [(word, 1) for word in item[1].split()]
+
+
+def make_unique_tuples(item: tuple):
+    return [(word, 1) for word in set(item[1].split())]
+
+
+def calc_frequency(item: tuple):
+    return (item[0], log10(1 + item[1]))
+
+
+def calc_idf(n: int, item: tuple):
+    return (item[0], log10(n / item[1]))
+
+
+def calc_relevancy(item: tuple):
+    return (item[0], item[1][0] * item[1][1])
+
+
+def filter_frequency(n: int, item: tuple):
+    return ((0.7 * n) > item[1]) and (item[1] >= 5)
+
+
+########################### MAIN ###########################
+
+word1 = "volkswagen"
+word2 = "hyundai"
+
+sc = SparkContext(appName="APS2")
 rdd = sc.sequenceFile("part-00000")
+rdd = rdd.map(process_rdd)
 N = rdd.count()
 
-# Words analyzed
-word1 = "coca-cola"
-word2 = "pepsi"
+rdd_idf = (
+    rdd.flatMap(make_unique_tuples)
+    .reduceByKey(lambda x, y: (x + y))
+    .filter(word_filter)
+    .filter(partial(filter_frequency, N))
+    .map(partial(calc_idf, N))
+)
 
-# Document counter
-def doc_counter(item):
-    words_raw = item[1].strip().split()
-    words = [
-        i.lower()
-        for i in words_raw
-        if (not any(j.isdigit() for j in i) and len(i) > 3 and (not ("——") in i))
-    ]
-
-    if option_picked == 0:
-        if word1 in words and word2 in words:
-            return [(i, 1) for i in set(words)]
-    elif option_picked == 1:
-        if word1 in words and word2 not in words:
-            return [(i, 1) for i in set(words)]
-    else:
-        if word1 not in words and word2 in words:
-            return [(i, 1) for i in set(words)]
-
-    return []
+rdd_w1 = rdd.filter(partial(find_word, word1))
+rdd_w2 = rdd.filter(partial(find_word, word2))
+rdd_both = rdd_w1.intersection(rdd_w2)
 
 
-# Word counter
-def word_counter(item):
-    words_raw = item[1].strip().split()
-    words = [
-        i.lower()
-        for i in words_raw
-        if (not any(j.isdigit() for j in i) and len(i) > 3 and (not ("——") in i))
-    ]
+# Calculating top 100 for both words
 
-    if option_picked == 0:
-        if word1 in words and word2 in words:
-            return [(i, 1) for i in words]
-    elif option_picked == 1:
-        if word1 in words and word2 not in words:
-            return [(i, 1) for i in words]
-    else:
-        if word1 not in words and word2 in words:
-            return [(i, 1) for i in words]
-    return []
+rdd_both_freq = (
+    rdd_both.flatMap(make_tuples)
+    .reduceByKey(lambda x, y: x + y)
+    .filter(word_filter)
+    .map(calc_frequency)
+)
+rdd_both_rel = rdd_both_freq.join(rdd_idf).map(calc_relevancy)
+top_100_both = rdd_both_rel.takeOrdered(100, key=lambda x: -x[1])
 
+# Calculating top 100 for word 1 only
 
-# Sums result and item to get number of owrds
-def count_words(result, item):
-    return result + item
+rdd_w1_only = rdd_w1.subtractByKey(rdd_w2)
+rdd_w1_only_freq = (
+    rdd_w1_only.flatMap(make_tuples)
+    .reduceByKey(lambda x, y: x + y)
+    .filter(word_filter)
+    .map(calc_frequency)
+)
+rdd_w1_only_rel = rdd_w1_only_freq.join(rdd_idf).map(calc_relevancy)
+top_100_w1_only = rdd_w1_only_rel.takeOrdered(100, key=lambda x: -x[1])
 
+# Calculating top 100 for word 2 only
 
-# option_picked represents which words you want to analyze
-# 0 = coca-cola and pepsi
-# 1 = coca-cola
-# 2 = pepsi
-
-option_picked = 0
-docs_combined = rdd.flatMap(doc_counter).reduceByKey(count_words)
-words_combined = rdd.flatMap(word_counter).reduceByKey(count_words)
-
-option_picked = 1
-docs_coca = rdd.flatMap(doc_counter).reduceByKey(count_words)
-words_coca = rdd.flatMap(word_counter).reduceByKey(count_words)
-
-option_picked = 2
-docs_pepsi = rdd.flatMap(doc_counter).reduceByKey(count_words)
-words_pepsi = rdd.flatMap(word_counter).reduceByKey(count_words)
-
-# Calculates idf value
-def calc_idf(item):
-    return item[0], log(N / item[1], 10)
+rdd_w2_only = rdd_w2.subtractByKey(rdd_w1)
+rdd_w2_only_freq = (
+    rdd_w2_only.flatMap(make_tuples)
+    .reduceByKey(lambda x, y: x + y)
+    .filter(word_filter)
+    .map(calc_frequency)
+)
+rdd_w2_only_rel = rdd_w2_only_freq.join(rdd_idf).map(calc_relevancy)
+top_100_w2_only = rdd_w2_only_rel.takeOrdered(100, key=lambda x: -x[1])
 
 
-# Calculates frequency
-def calc_frequency(item):
-    return item[0], log(1 + item[1], 10)
+# Checks if dir exists; if it doesn't, creates it
+if not os.path.isdir("csv"):
+    os.mkdir("csv")
+else:
+    for item in os.listdir("csv"):
+        if item.endswith(".csv"):
+            os.remove(os.path.join("csv", item))
 
+# Writes all top 100 in different csv files
 
-# Calculates relevancy
-def calc_relevancy(item):
-    return item[0], item[1][0] * item[1][1]
-
-
-# Here we map the functions created to the documents and to the words in order to calculate relevancy
-# Then, we generate a .csv file with the top 100 words ordered by relevancy for each scenario (using csv module)
-
-rdd_idf_combined = docs_combined.map(calc_idf)
-rdd_freq_combined = words_combined.map(calc_frequency)
-rdd_relevancy_combined = rdd_idf_combined.join(rdd_freq_combined).map(calc_relevancy)
-
-top_100_combined = rdd_relevancy_combined.takeOrdered(100, key=(lambda x: -x[1]))
-with open("csv/soda.csv", "w") as soda:
-    csv_out = csv.writer(soda)
+with open(f"csv/{word1}&&{word2}.csv", "w") as both:
+    csv_out = csv.writer(both)
     csv_out.writerow(["word", "freq"])
-    for row in top_100_combined:
+    for row in top_100_both:
         csv_out.writerow(row)
 
 
-rdd_idf_coca = docs_coca.map(calc_idf)
-rdd_freq_coca = words_coca.map(calc_frequency)
-rdd_relevancy_coca = rdd_idf_coca.join(rdd_freq_coca).map(calc_relevancy)
-
-top_100_coca = rdd_relevancy_coca.takeOrdered(100, key=(lambda x: -x[1]))
-with open("csv/coca.csv", "w") as coca:
-    csv_out = csv.writer(coca)
+with open(f"csv/{word1}.csv", "w") as w1:
+    csv_out = csv.writer(w1)
     csv_out.writerow(["word", "freq"])
-    for row in top_100_coca:
+    for row in top_100_w1_only:
         csv_out.writerow(row)
 
 
-rdd_idf_pepsi = docs_pepsi.map(calc_idf)
-rdd_freq_pepsi = words_pepsi.map(calc_frequency)
-rdd_relevancy_pepsi = rdd_idf_pepsi.join(rdd_freq_pepsi).map(calc_relevancy)
-
-top_100_pepsi = rdd_relevancy_pepsi.takeOrdered(100, key=(lambda x: -x[1]))
-with open("csv/pepsi.csv", "w") as pepsi:
-    csv_out = csv.writer(pepsi)
+with open(f"csv/{word2}.csv", "w") as w2:
+    csv_out = csv.writer(w2)
     csv_out.writerow(["word", "freq"])
-    for row in top_100_pepsi:
+    for row in top_100_w2_only:
         csv_out.writerow(row)
